@@ -137,6 +137,120 @@ try:
 except ImportError:
     HAS_BOTO = False
 
+class CloudFormationStack:
+    """Dry run a CloudFormation stack update"""
+
+    def __init__(self, module, stack_name, state,
+                 template=None, parameters=None,
+                 region=None, **aws_connect_params):
+        self.module = module
+        self.cfn = self._get_connection(region, **aws_connect_params)
+
+        self.stack_name = stack_name
+        self.target_state = state
+        self.target_template = template
+        self.target_parameters = parameters
+
+        self.current_template = None
+        self.current_parameters = None
+        self.current_outputs = dict()
+
+        self.present = False
+        self.changed = False
+
+        self._load_current_stack()
+
+    def check(self):
+        pending_updates = self.planned_changes()
+        changed = False
+
+        if self.target_state == 'present' and not self.present:
+            changed = True
+            output = "Stack would be created."
+        elif self.target_state == 'present' and len(pending_updates) > 0:
+            changed = True
+            output = "Stack would be updated, changes: %s" % pending_updates
+        elif self.target_state == 'present' and len(pending_updates) == 0:
+            changed = False
+            output = "Stack is up to date."
+        elif self.target_state == 'absent' and self.present:
+            changed = True
+            output = "Stack will be deleted."
+        elif self.target_state == 'absent' and not self.present:
+            changed = False
+            output = "Stack is missing."
+
+        self.module.exit_json(changed=changed, output=output, stack_outputs=self.current_outputs)
+
+    def planned_changes(self):
+        reasons = []
+        if not self.present: return reasons # stack will be created
+
+        if self.target_template != self.current_template:
+            template_delta = self._diff_templates()
+            reasons.append({ 'Template': template_delta })
+
+        params_delta = {}
+        target_parameters = self.target_parameters
+        for old in self.current_parameters:
+            new_value = target_parameters.get(old.key)
+            if new_value and (str(new_value) != old.value):
+                params_delta[old.key] = { "from": old.value, "to": target_parameters.get(old.key) }
+        if len(params_delta) > 0:
+            reasons.append(params_delta)
+        return reasons
+
+    def diff_json(self, current, target):
+        current_keys = set(current.keys())
+        target_keys = set(target.keys())
+        result = {}
+        # Keys may be added or removed, so we iterate over the union
+        for key in current_keys.union(target_keys):
+            if key not in current_keys:
+                result[key] = "Added"
+            elif key not in target_keys:
+                result[key] = "Removed"
+            elif current[key] != target[key]:
+                # If the current key is a dict, call this method recursively
+                if type(current[key]) == dict:
+                    child_diff = self.diff_json(current[key], target[key])
+                    if len(child_diff) > 0:
+                        result[key] = child_diff
+                    else:
+                        # This should never happen, but is no cause for an error
+                        result[key] = "child diff but no changes found"
+                else:
+                    result[key] = "Changed from %s to %s" % (current[key], target[key])
+            else:
+                pass # no change
+        return result
+
+    def _diff_templates(self):
+        current = json.loads(self.current_template)
+        target = json.loads(self.target_template)
+        return self.diff_json(current, target)
+
+    def _get_connection(self, region, **aws_connect_params):
+        try:
+            return connect_to_aws(boto.cloudformation, region,
+                                 **aws_connect_params)
+        except boto.exception.NoAuthHandlerFound, e:
+            self.module.fail_json(msg=str(e))
+
+    def _load_current_stack(self):
+        try:
+            stack = self.cfn.describe_stacks(self.stack_name)[0]
+            # We could describe the stack, so it must exist
+            self.present = True
+        except boto.exception.BotoServerError, e:
+            return
+
+        for output in stack.outputs:
+            self.current_outputs[output.key] = output.value
+
+        template = stack.get_template()['GetTemplateResponse']['GetTemplateResult']
+        self.current_template = template['TemplateBody']
+        self.current_parameters = stack.parameters
 
 def boto_exception(err):
     '''generic error message handler'''
@@ -227,6 +341,7 @@ def main():
 
     module = AnsibleModule(
         argument_spec=argument_spec,
+        supports_check_mode=True,
         mutually_exclusive=[['template_url', 'template']],
     )
     if not HAS_BOTO:
@@ -259,6 +374,10 @@ def main():
 
     region, ec2_url, aws_connect_kwargs = get_aws_connection_info(module)
 
+    cfn_stack = CloudFormationStack(module, stack_name, state,
+                                    template_body, template_parameters,
+                                    region=region, **aws_connect_kwargs)
+
     kwargs = dict()
     if tags is not None:
         if not boto_version_required((2,6,0)):
@@ -280,6 +399,11 @@ def main():
     update = False
     result = {}
     operation = None
+
+    # if we're in check mode, work out what action would be taken and exit
+    if module.check_mode:
+        cfn_stack.check()
+        module.fail_json('ASSERTION FAILURE: cfn_stack.check() should not return control.')
 
     # if state is present we are going to ensure that the stack is either
     # created or updated
