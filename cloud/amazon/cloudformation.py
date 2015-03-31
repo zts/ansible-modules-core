@@ -179,6 +179,9 @@ class CloudFormationStack:
         elif self.target_state == 'absent' and not self.present:
             changed = False
             output = "Stack is missing."
+        elif self.target_state == 'described':
+            changed = False
+            output = "Stack is only being described"
 
         self.module.exit_json(changed=changed, output=output, stack_outputs=self.current_outputs)
 
@@ -330,7 +333,7 @@ def main():
     argument_spec.update(dict(
             stack_name=dict(required=True),
             template_parameters=dict(required=False, type='dict', default={}),
-            state=dict(default='present', choices=['present', 'absent']),
+            state=dict(default='present', choices=['present', 'absent', 'described']),
             template=dict(default=None, required=False),
             stack_policy=dict(default=None, required=False),
             disable_rollback=dict(default=False, type='bool'),
@@ -404,6 +407,12 @@ def main():
     if module.check_mode:
         cfn_stack.check()
         module.fail_json('ASSERTION FAILURE: cfn_stack.check() should not return control.')
+
+    if state == 'described':
+        if cfn_stack.present:
+            module.exit_json(changed=False, stack_outputs=cfn_stack.current_outputs)
+        else:
+            module.fail_json(msg="Stack doesn't exist")
 
     # if state is present we are going to ensure that the stack is either
     # created or updated
