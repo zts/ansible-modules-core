@@ -166,7 +166,7 @@ class CloudFormationStack:
 
         if self.target_state == 'present' and not self.present:
             changed = True
-            output = "Stack would be created."
+            output = "Stack would be created, parameters: %s" % self.target_parameters
         elif self.target_state == 'present' and len(pending_updates) > 0:
             changed = True
             output = "Stack would be updated, changes: %s" % pending_updates
