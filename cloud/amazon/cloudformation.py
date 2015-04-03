@@ -163,10 +163,14 @@ class CloudFormationStack:
     def check(self):
         pending_updates = self.planned_changes()
         changed = False
+        stack_outputs = self.current_outputs
 
         if self.target_state == 'present' and not self.present:
             changed = True
             output = "Stack would be created, parameters: %s" % self.target_parameters
+            template = json.loads(self.target_template)
+            template_outputs = template['Outputs'].keys()
+            stack_outputs = {k: "(OUTPUT) %s.%s" % (self.stack_name, k) for k in template_outputs}
         elif self.target_state == 'present' and len(pending_updates) > 0:
             changed = True
             output = "Stack would be updated, changes: %s" % pending_updates
@@ -183,11 +187,12 @@ class CloudFormationStack:
             changed = False
             output = "Stack is only being described"
 
-        self.module.exit_json(changed=changed, output=output, stack_outputs=self.current_outputs)
+        self.module.exit_json(changed=changed, output=output, stack_outputs=stack_outputs)
 
     def planned_changes(self):
         reasons = []
-        if not self.present: return reasons # stack will be created
+        if not self.present:
+            return reasons # stack will be created
 
         if self.target_template != self.current_template:
             template_delta = self._diff_templates()
