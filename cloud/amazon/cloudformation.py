@@ -227,11 +227,18 @@ class CloudFormationStack:
                     else:
                         # This should never happen, but is no cause for an error
                         result[key] = "child diff but no changes found"
+                elif type(current[key]) == list:
+                    result[key] = self._compare_lists(current[key], target[key])
                 else:
                     result[key] = "Changed from %s to %s" % (current[key], target[key])
             else:
                 pass # no change
         return result
+
+    def _compare_lists(self, a, b):
+        current = set(map(str, a))
+        target = set(map(str, b))
+        return { 'Added': list(target - current), 'Removed': list(current - target) }
 
     def _diff_templates(self):
         current = json.loads(self.current_template)
